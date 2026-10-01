@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Aura Calculator</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='0.9em' font-size='90'%3E%F0%9F%A7%AE%3C/text%3E%3C/svg%3E">
 <style>
   :root {
     --bg-a: #1a1a3a; --bg-b: #0a2a3a;
@@ -135,8 +136,17 @@
     font-size: 36px; font-weight: 300; letter-spacing: -0.01em; line-height: 1.15;
     min-height: 44px; white-space: nowrap; overflow-x: auto; text-align: right;
     scrollbar-width: none; transition: font-size 0.12s ease;
+    cursor: text; user-select: none; -webkit-user-select: none;
   }
   .expr::-webkit-scrollbar { display: none; }
+  .caret {
+    display: inline-block; width: 2px; height: 0.95em; margin: 0 1px;
+    background: var(--accent); box-shadow: 0 0 8px var(--accent-glow);
+    vertical-align: -0.08em; border-radius: 1px;
+    animation: blink 1.1s steps(1) infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+  .expr .ph { opacity: 0.25; }
   .expr.s1 { font-size: 27px; } .expr.s2 { font-size: 20px; }
   .answer {
     font-size: 20px; font-weight: 400; color: var(--text-dim); min-height: 26px;
@@ -308,6 +318,18 @@
   }
   .game-card.win { animation: winglow 0.9s ease; border-color: rgba(48, 209, 88, 0.7); }
 
+  button:focus-visible, .switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .pb { font-size: 9px; color: var(--accent); margin-left: 1px; }
+  .shead button.dim { opacity: 0.35; }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important; animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+    .caret { animation: none !important; opacity: 1; }
+  }
+
   @media (max-width: 920px) {
     .game, .game.open {
       position: fixed; top: 0; right: 0; height: 100vh; width: min(348px, 92vw);
@@ -328,17 +350,18 @@
     <div class="topbar">
       <div class="brand"><span class="brand-dot"></span><span class="brand-name">Aura Calc</span></div>
       <div class="top-actions">
-        <button class="icon-btn" id="sciToggle" title="Modo científico">ƒ</button>
-        <button class="icon-btn" id="gameToggle" title="Juego objetivo">🎯</button>
-        <button class="icon-btn" id="histToggle" title="Historial">🕘</button>
-        <div class="switch" id="themeToggle" title="Tema"><div class="thumb">☾</div></div>
+        <button class="icon-btn" id="sciToggle" title="Modo científico" aria-label="Modo científico">ƒ</button>
+        <button class="icon-btn" id="gameToggle" title="Juego objetivo" aria-label="Juego Función Proyectil" aria-pressed="false">🎯</button>
+        <button class="icon-btn" id="histToggle" title="Historial" aria-label="Ver historial">🕘</button>
+        <button class="icon-btn" id="sndToggle" title="Sonido" aria-label="Activar o silenciar sonido" aria-pressed="true">🔊</button>
+        <div class="switch" id="themeToggle" title="Tema" role="switch" tabindex="0" aria-label="Tema claro u oscuro"><div class="thumb">☾</div></div>
       </div>
     </div>
 
     <div class="display" id="display" title="Clic para copiar">
       <div class="mem-badge" id="memBadge">M</div>
       <div class="expr" id="expr">0</div>
-      <div class="answer" id="answer">&nbsp;</div>
+      <div class="answer" id="answer" aria-live="polite">&nbsp;</div>
     </div>
 
     <div class="sci" id="sci">
@@ -346,8 +369,8 @@
         <div class="shead">
           <button id="btn2nd">2nd</button>
           <button id="btnAngle">RAD</button>
-          <button data-ins="("> (</button>
-          <button data-ins=")"> )</button>
+          <button id="pOpenBtn" data-ins="(" aria-label="Abrir paréntesis"> (</button>
+          <button id="pCloseBtn" data-ins=")" aria-label="Cerrar paréntesis"> )</button>
           <button data-ins="ans">ans</button>
           <button data-ins="e">e</button>
           <button data-ins="x">𝑥</button>
@@ -695,6 +718,88 @@
   let second = false;
   let justOp = false;
   let lastExpr = '';
+  let cursor = 0;
+
+  const TOKS = ['sin⁻¹(', 'cos⁻¹(', 'tan⁻¹(', 'asinh(', 'acosh(', 'atanh(', 'asin(', 'acos(', 'atan(', 'sinh(', 'cosh(', 'tanh(', 'sin(', 'cos(', 'tan(', '√(', '∛(', 'sqrt(', 'cbrt(', 'log(', 'exp(', 'abs(', 'ln(', 'e^', ' mod ', '10^(', 'ans', '⁻¹'];
+  function tokLeftLen(s) {
+    if (!s) return 0;
+    for (const t of TOKS) if (s.endsWith(t)) return t.length;
+    return 1;
+  }
+  function tokRightLen(s) {
+    if (!s) return 0;
+    for (const t of TOKS) if (s.startsWith(t)) return t.length;
+    return 1;
+  }
+  function escHTML(s) { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+
+  function openCount(s) {
+    let n = 0;
+    for (const c of s) { if (c === '(') n++; else if (c === ')') n--; }
+    return Math.max(0, n);
+  }
+
+  /* undo / redo: cada edición de expr crea un paso; mover el cursor no */
+  const undoStack = [], redoStack = [];
+  let lastSnap = { expr: '', cursor: 0, justOp: false, answered: false };
+  let restoring = false;
+  function snap() {
+    if (restoring) return;
+    if (expr !== lastSnap.expr || justOp !== lastSnap.justOp || answered !== lastSnap.answered) {
+      if (expr !== lastSnap.expr) tick();
+      undoStack.push(lastSnap);
+      if (undoStack.length > 80) undoStack.shift();
+      redoStack.length = 0;
+      lastSnap = { expr, cursor, justOp, answered };
+    }
+  }
+  function undo() {
+    if (!undoStack.length) return;
+    restoring = true;
+    redoStack.push({ expr, cursor, justOp, answered });
+    const s = undoStack.pop();
+    expr = s.expr; cursor = s.cursor; justOp = s.justOp; answered = s.answered;
+    lastSnap = { expr, cursor, justOp, answered };
+    render();
+    restoring = false;
+  }
+  function redo() {
+    if (!redoStack.length) return;
+    restoring = true;
+    undoStack.push({ expr, cursor, justOp, answered });
+    const s = redoStack.pop();
+    expr = s.expr; cursor = s.cursor; justOp = s.justOp; answered = s.answered;
+    lastSnap = { expr, cursor, justOp, answered };
+    render();
+    restoring = false;
+  }
+
+  /* feedback: sonido WebAudio sintetizado + vibración móvil */
+  let sound = true;
+  try { sound = localStorage.getItem('aura-snd') !== '0'; } catch (e) {}
+  let actx = null;
+  function beep(freq, dur, type, vol, delay) {
+    if (!sound) return;
+    try {
+      if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
+      if (actx.state === 'suspended') actx.resume();
+      const t = actx.currentTime + (delay || 0);
+      const o = actx.createOscillator(), g = actx.createGain();
+      o.type = type || 'sine';
+      o.frequency.setValueAtTime(freq, t);
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(vol || 0.04, t + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+      o.connect(g); g.connect(actx.destination);
+      o.start(t); o.stop(t + dur + 0.03);
+    } catch (e) {}
+  }
+  function vib(p) { if (sound && navigator.vibrate) { try { navigator.vibrate(p); } catch (e) {} } }
+  function tick() { beep(1500, 0.045, 'triangle', 0.02); vib(5); }
+  function okSound() { beep(660, 0.12, 'sine', 0.05); beep(880, 0.16, 'sine', 0.05, 0.09); vib([10, 20, 10]); }
+  function errSound() { beep(170, 0.2, 'sawtooth', 0.045); vib(40); }
+  function winSound() { [523, 659, 784, 1047].forEach((f, i) => beep(f, 0.18, 'triangle', 0.05, i * 0.09)); vib([15, 40, 15]); }
+  function boomSound() { beep(240, 0.25, 'sawtooth', 0.05); beep(120, 0.4, 'sawtooth', 0.05, 0.06); vib(60); }
 
   try {
     memory = parseFloat(localStorage.getItem('aura-mem')) || 0;
@@ -726,11 +831,16 @@
   /* ============ render ============ */
 
   function render() {
+    snap();
     schedulePreview();
     memBadge.classList.toggle('on', memory !== 0);
     document.querySelectorAll('.chip').forEach(c => {
       if (c.dataset.mem === 'mr') c.classList.toggle('has', memory !== 0);
     });
+    const oc = openCount(expr);
+    const pob = $('pOpenBtn'), pcb = $('pCloseBtn');
+    if (pob) pob.innerHTML = oc > 0 ? ' (<sup class="pb">' + oc + '</sup>' : ' (';
+    if (pcb) pcb.classList.toggle('dim', oc === 0);
 
     if (answered) {
       displayEl.classList.add('answered');
@@ -741,11 +851,22 @@
       return;
     }
     displayEl.classList.remove('answered');
+    cursor = Math.max(0, Math.min(cursor, expr.length));
     const shown = expr || '0';
-    exprEl.textContent = shown;
-    exprEl.scrollLeft = exprEl.scrollWidth;
+    let html = '';
+    const before = expr.slice(0, cursor), after = expr.slice(cursor);
+    for (const c of before) html += '<span class="ch">' + escHTML(c) + '</span>';
+    html += '<span class="caret"></span>';
+    for (const c of after) html += '<span class="ch">' + escHTML(c) + '</span>';
+    if (!expr) html += '<span class="ph">0</span>';
+    exprEl.innerHTML = html;
     exprEl.classList.toggle('s1', shown.length > 11);
     exprEl.classList.toggle('s2', shown.length > 17);
+    const cr = exprEl.querySelector('.caret'), br = exprEl.getBoundingClientRect();
+    if (cr && br.width) {
+      if (cr.right > br.right - 2) exprEl.scrollLeft += cr.right - br.right + 8;
+      else if (cr.left < br.left + 2) exprEl.scrollLeft -= br.left - cr.left + 8;
+    }
     if (expr && !justOp) {
       try { answerEl.textContent = '≈ ' + fmtPretty(evaluate(expr)); }
       catch (e) { answerEl.innerHTML = '&nbsp;'; }
@@ -767,6 +888,7 @@
       b.addEventListener('click', () => {
         answered = false;
         expr = h.raw.replace('.', ',');
+        cursor = expr.length;
         render();
         closeDrawer();
       });
@@ -787,38 +909,87 @@
       if (/^[+\-−*×\/÷^%²³!]|^ mod $|^1÷$/.test(s)) expr = rawComma(currentAns);
       else expr = '';
       answered = false;
+      cursor = expr.length;
     }
-    if (s === '1÷') { expr = '1÷(' + expr + ')'; justOp = true; render(); return; }
-    if (s === ')' && (expr.match(/\(/g) || []).length <= (expr.match(/\)/g) || []).length) return;
-    if ((s === '²' || s === '³' || s === '!' || s === '%' || s === '⁻¹') && (/[+×÷−^]$|\bmod $/.test(expr) || !expr)) return;
-    if (s === ' mod ' && !expr) return;
+    let before = expr.slice(0, cursor), after = expr.slice(cursor);
+
+    if (s === '1÷') {
+      const lm = before.match(/[0-9.,]+$/), rm = after.match(/^[0-9.,]+/);
+      const l = lm ? lm[0] : '', r = rm ? rm[0] : '';
+      if (!l && !r) { expr = before + '1÷(' + after; cursor = before.length + 4; justOp = true; render(); return; }
+      const b2 = before.slice(0, before.length - l.length);
+      expr = b2 + '1÷(' + l + r + ')' + after.slice(r.length);
+      cursor = b2.length + 4 + (l + r).length + 1;
+      render();
+      return;
+    }
+    if (s === ')') {
+      const opens = (before.match(/\(/g) || []).length, closes = (before.match(/\)/g) || []).length;
+      if (opens <= closes) return;
+      if (!/[0-9.,xπ!²³¹%)]$/.test(before)) return;
+      expr = before + ')' + after;
+      cursor = before.length + 1;
+      render();
+      return;
+    }
+    if (s === '²' || s === '³' || s === '!' || s === '%' || s === '⁻¹') {
+      if (!before || /[+×÷−^]$/.test(before) || /\bmod\s*$/.test(before)) return;
+      expr = before + s + after;
+      cursor = before.length + s.length;
+      render();
+      return;
+    }
+    if (s === ' mod ' && !before) return;
     if (/^[+\-−*×\/÷^]/.test(s) || s === ' mod ') {
       justOp = true;
-      if (/\bmod\s*$/.test(expr)) expr = expr.replace(/\s*mod\s*$/, '');
-      const t = expr.slice(-1);
+      let b2 = before;
+      if (/\bmod\s*$/.test(b2)) b2 = b2.replace(/\s*mod\s*$/, '');
+      const t = b2.slice(-1);
       const isMinus = s === '-' || s === '−';
       if (isMinus && s === '-') s = '−';
-      if (!expr) { if (isMinus) { expr = '−'; render(); } return; }
+      if (!b2) {
+        if (isMinus) { expr = '−' + after; cursor = 1; render(); }
+        return;
+      }
       if (/[×÷^]/.test(t)) {
-        if (isMinus) expr += '−';
-        else expr = expr.slice(0, -1) + s;
+        if (isMinus) b2 += '−';
+        else b2 = b2.slice(0, -1) + s;
       } else if (/[+−-]/.test(t)) {
-        expr = expr.replace(/[+−-]+$/, isMinus ? '−' : s);
+        b2 = b2.replace(/[+−-]+$/, isMinus ? '−' : s);
       } else if (t === '(') {
         if (!isMinus) return;
-        expr += '−';
+        b2 += '−';
       } else {
-        expr += s;
+        b2 += s;
       }
+      const at = tokRightLen(after);
+      const atStr = after.slice(0, at);
+      if (/^[+×÷^]$/.test(atStr) || atStr === ' mod ') after = after.slice(at);
+      expr = b2 + after;
+      cursor = b2.length;
       render();
       return;
     } else {
       justOp = false;
-      if (s === ',' && /[+×÷^−-]$| mod $|\($/.test(expr)) expr += '0';
+      if (s === ',' && /[+×÷^−-]$| mod $|\($/.test(before)) before += '0';
       document.querySelectorAll('.op').forEach(b => b.classList.remove('active'));
     }
-    if (s === '10^') expr += '10^(';
-    else expr += s;
+    const add = s === '10^' ? '10^(' : s;
+    expr = before + add + after;
+    cursor = before.length + add.length;
+    render();
+  }
+
+  function moveLeft() { if (!answered) { cursor -= tokLeftLen(expr.slice(0, cursor)); render(); } }
+  function moveRight() { if (!answered) { cursor += tokRightLen(expr.slice(cursor)); render(); } }
+  function moveHome() { if (!answered) { cursor = 0; render(); } }
+  function moveEnd() { if (!answered) { cursor = expr.length; render(); } }
+  function deleteRight() {
+    if (answered) return;
+    const n = tokRightLen(expr.slice(cursor));
+    if (!n) return;
+    expr = expr.slice(0, cursor) + expr.slice(cursor + n);
+    justOp = /[+\-−*×÷^]$/.test(expr.slice(0, cursor));
     render();
   }
 
@@ -837,10 +1008,11 @@
       clean = clean.replace(/(\s*mod\s*)$|[+\-−*×÷^]$/, '');
     }
     if (clean !== expr) expr = clean;
+    cursor = expr.length;
     if (!expr) { render(); return; }
     let v;
     try { v = evaluate(expr); }
-    catch (e) { answerEl.textContent = 'Error'; toast('Expresión inválida'); return; }
+    catch (e) { answerEl.textContent = 'Error'; toast('Expresión inválida'); errSound(); return; }
     const trivial = /^[−-]?[\d.,]+(!|%|²|³)*$/.test(expr);
     if (!trivial) {
       history.unshift({ expr: expr, res: fmtPretty(v), raw: fmtRaw(v) || String(v) });
@@ -857,21 +1029,21 @@
     answerEl.classList.remove('flash');
     void answerEl.offsetWidth;
     answerEl.classList.add('flash');
+    okSound();
   }
 
   function backspace() {
-    if (answered) { answered = false; render(); return; }
-    const tokens = ['sin⁻¹(', 'cos⁻¹(', 'tan⁻¹(', 'asinh(', 'acosh(', 'atanh(', 'asin(', 'acos(', 'atan(', 'sinh(', 'cosh(', 'tanh(', 'sin(', 'cos(', 'tan(', '√(', '∛(', 'sqrt(', 'cbrt(', 'log(', 'exp(', 'abs(', 'ln(', 'e^', ' mod ', '10^(', 'ans'];
-    for (const t of tokens) {
-      if (expr.endsWith(t)) { expr = expr.slice(0, -t.length); render(); return; }
-    }
-    expr = expr.slice(0, -1);
-    justOp = /[+\-−*×\/÷^]$/.test(expr);
+    if (answered) { answered = false; cursor = expr.length; render(); return; }
+    const n = tokLeftLen(expr.slice(0, cursor));
+    if (!n) return;
+    expr = expr.slice(0, cursor - n) + expr.slice(cursor);
+    cursor -= n;
+    justOp = /[+\-−*×÷^]$/.test(expr.slice(0, cursor));
     render();
   }
 
   function clearAll() {
-    expr = ''; answered = false; justOp = false;
+    expr = ''; answered = false; justOp = false; cursor = 0;
     document.querySelectorAll('.op').forEach(b => b.classList.remove('active'));
     render();
   }
@@ -885,6 +1057,7 @@
       const hasBin = / mod |[/+×÷^]/.test(expr);
       expr = hasBin ? '−(' + expr + ')' : '−' + expr;
     }
+    cursor = expr.length;
     render();
   }
 
@@ -1048,6 +1221,7 @@
     try { anim.lastY = evaluate(expr, 0.05); } catch (e) { anim.lastY = NaN; }
     anim.trail = []; anim.resolved = null; anim.miss = null;
     game.busy = true;
+    beep(320, 0.28, 'sine', 0.035); beep(640, 0.2, 'sine', 0.025, 0.05); vib(10);
     $('gLive').textContent = 'en vuelo…';
   }
 
@@ -1070,6 +1244,7 @@
     game.level = 1 + Math.floor(game.wins / 3);
     saveGame(); renderGame();
     pulseCard('win');
+    winSound();
     toast('¡Impacto! +' + pts + ' puntos');
     anim.phase = 'celebrate'; anim.endT = performance.now();
     updateLive();
@@ -1078,6 +1253,7 @@
   function failSequence(why) {
     game.streak = 0; saveGame(); renderGame();
     pulseCard('shake');
+    boomSound();
     if (why) toast(why);
     anim.phase = anim.miss ? 'showmiss' : 'boom';
     anim.endT = performance.now();
@@ -1376,9 +1552,11 @@
   });
   document.querySelectorAll('[data-fn]').forEach(b => {
     b.addEventListener('click', () => {
-      if (answered) { answered = false; expr = fmtRaw(currentAns) || '0'; }
+      if (answered) { answered = false; expr = fmtRaw(currentAns) || '0'; cursor = expr.length; }
       const fn = second && b.dataset.alt ? b.dataset.alt : b.dataset.fn;
-      expr += b.dataset.fn === 'exp' ? 'e^' : (fn.includes('(') ? fn : fn + '(');
+      const add = b.dataset.fn === 'exp' ? 'e^' : (fn.includes('(') ? fn : fn + '(');
+      expr = expr.slice(0, cursor) + add + expr.slice(cursor);
+      cursor += add.length;
       justOp = false;
       document.querySelectorAll('.op').forEach(x => x.classList.remove('active'));
       render();
@@ -1414,7 +1592,10 @@
   function closeDrawer() { drawer.classList.remove('open'); updateScrim(); }
   $('histToggle').addEventListener('click', openDrawer);
   $('histClose').addEventListener('click', closeDrawer);
-  $('gameToggle').addEventListener('click', () => setGame(!game.open));
+  $('gameToggle').addEventListener('click', () => {
+    setGame(!game.open);
+    $('gameToggle').setAttribute('aria-pressed', String(game.open));
+  });
   $('gameClose').addEventListener('click', () => setGame(false));
   $('gTry').addEventListener('click', launchGame);
   window.addEventListener('resize', updateScrim);
@@ -1430,13 +1611,47 @@
     const cur = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
     document.documentElement.setAttribute('data-theme', cur);
     $('themeToggle').querySelector('.thumb').textContent = cur === 'light' ? '☀' : '☾';
+    $('themeToggle').setAttribute('aria-checked', String(cur === 'light'));
     try { localStorage.setItem('aura-theme', cur); } catch (e) {}
+  });
+  $('themeToggle').addEventListener('keydown', e => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); $('themeToggle').click(); }
   });
   if (document.documentElement.getAttribute('data-theme') === 'light') {
     $('themeToggle').querySelector('.thumb').textContent = '☀';
+    $('themeToggle').setAttribute('aria-checked', 'true');
   }
 
-  displayEl.addEventListener('click', () => {
+  function updateSndBtn() {
+    $('sndToggle').textContent = sound ? '🔊' : '🔇';
+    $('sndToggle').setAttribute('aria-pressed', String(sound));
+  }
+  $('sndToggle').addEventListener('click', () => {
+    sound = !sound;
+    try { localStorage.setItem('aura-snd', sound ? '1' : '0'); } catch (e) {}
+    updateSndBtn();
+    if (sound) okSound();
+  });
+  updateSndBtn();
+
+  exprEl.addEventListener('pointerdown', e => {
+    if (answered) return;
+    e.preventDefault();
+    const chars = exprEl.querySelectorAll('.ch');
+    if (!chars.length) { cursor = 0; render(); return; }
+    let best = 0, bestD = Infinity;
+    for (let i = 0; i < chars.length; i++) {
+      const r = chars[i].getBoundingClientRect();
+      const mid = r.left + r.width / 2;
+      const d = Math.abs(mid - e.clientX);
+      if (d < bestD) { bestD = d; best = mid <= e.clientX ? i + 1 : i; }
+    }
+    cursor = best;
+    render();
+  });
+
+  displayEl.addEventListener('click', e => {
+    if (e.target.closest && e.target.closest('#expr')) return;
     let toCopy = null;
     if (answered) toCopy = fmtPretty(currentAns);
     else {
@@ -1449,6 +1664,13 @@
   });
 
   window.addEventListener('keydown', e => {
+    if (e.ctrlKey || e.metaKey) {
+      const k = e.key.toLowerCase();
+      if (k === 'z') { e.preventDefault(); if (e.shiftKey) redo(); else undo(); }
+      else if (k === 'y') { e.preventDefault(); redo(); }
+      return;
+    }
+    if (e.altKey) return;
     if (e.key === 'Enter' || e.key === '=') { e.preventDefault(); equals(); return; }
     if (e.key === 'Escape') {
       if (drawer.classList.contains('open')) { closeDrawer(); return; }
@@ -1478,7 +1700,12 @@
     if (e.key === 'a') return insert('ans');
     if (e.key === 'e') return insert('e^');
     if (e.key === 'm') return memOp('mr');
-    if (e.key === 'ArrowUp') { if (history[0]) { expr = history[0].expr; answered = false; render(); } return; }
+    if (e.key === 'ArrowUp') { if (history[0]) { expr = history[0].expr; answered = false; cursor = expr.length; render(); } return; }
+    if (e.key === 'ArrowLeft') { moveLeft(); return; }
+    if (e.key === 'ArrowRight') { moveRight(); return; }
+    if (e.key === 'Home') { moveHome(); return; }
+    if (e.key === 'End') { moveEnd(); return; }
+    if (e.key === 'Delete') { deleteRight(); return; }
   });
 
   render();
